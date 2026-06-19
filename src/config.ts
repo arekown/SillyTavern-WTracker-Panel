@@ -31,7 +31,7 @@ export interface ExtensionSettings {
   promptXml: string;
 }
 
-export const extensionName = 'SillyTavern-WTracker';
+export const extensionName = 'SillyTavern-WTracker-Panel';
 
 export const DEFAULT_PROMPT = `You are a Scene Tracker Assistant. You maintain a clear, consistent, structured tracker for a roleplay. Use the latest message, the previous tracker, and recent context to update every field. Each field must be filled and complete. When something is not stated, make reasonable assumptions from prior descriptions, logical inference, or sensible defaults — never leave a field empty.
 
