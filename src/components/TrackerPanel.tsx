@@ -1,12 +1,13 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { createRoot } from 'react-dom/client';
 import { EventNames } from 'sillytavern-utils-lib/types';
+import { AutoModeOptions } from 'sillytavern-utils-lib/types/translate';
 import { EXTENSION_KEY } from '../config.js';
+import { settingsManager } from './Settings.js';
 
 const VALUE_KEY = 'value';
-const IMG_KEY = 'WTrackerPanelImages'; // eigener Settings-Bereich für gespeicherte Portraits
+const IMG_KEY = 'WTrackerPanelImages';
 
-// Deutsche Labels. Unbekannte Schlüssel werden automatisch humanisiert.
 const LABELS: Record<string, string> = {
   time: 'Zeit',
   timeElapsed: 'Vergangen',
@@ -52,7 +53,13 @@ const CHAR_GROUPS: { key: string; title: string; icon: string }[] = [
   { key: 'mind', title: 'Geist', icon: '🧠' },
 ];
 
-// --- Daten lesen ---
+const AUTO_MODE_OPTIONS: { value: string; label: string }[] = [
+  { value: 'none', label: 'Aus' },
+  { value: 'responses', label: 'Antworten verarbeiten' },
+  { value: 'inputs', label: 'Eingaben verarbeiten' },
+  { value: 'both', label: 'Beides verarbeiten' },
+];
+
 function getLatestTracker(): any | null {
   try {
     const ctx = SillyTavern.getContext();
@@ -68,7 +75,6 @@ function getLatestTracker(): any | null {
   return null;
 }
 
-// --- Bild-Speicher (pro Charaktername, persistiert) ---
 function loadImage(name: string): string | null {
   try {
     const ctx: any = SillyTavern.getContext();
@@ -91,17 +97,17 @@ function clearImage(name: string): void {
   }
 }
 
-// --- Bild-Prompt aus Tracker-Feldern bauen ---
 function buildImagePrompt(c: any): string {
   const a = c?.appearance ?? {};
   const parts = [
     c?.race,
+    c?.gender,
     a.build,
     a.hair && `${a.hair} hair`,
     a.eyeColor && `${a.eyeColor} eyes`,
     a.makeup && a.makeup !== 'Kein Make-up' ? a.makeup : null,
     c?.clothing?.outfit,
-    'solo portrait',
+    'solo portrait, detailed character portrait',
   ].filter(Boolean);
   return parts
     .join(', ')
@@ -111,7 +117,6 @@ function buildImagePrompt(c: any): string {
     .trim();
 }
 
-// --- /sd aufrufen und URL aus der Pipe holen ---
 async function generateImageUrl(prompt: string): Promise<string | null> {
   const ctx: any = SillyTavern.getContext();
   const exec = ctx.executeSlashCommandsWithOptions ?? ctx.executeSlashCommands;
@@ -236,14 +241,13 @@ function Relationships({ list }: { list: any[] }): React.ReactElement {
 
 function CharacterCard({ character }: { character: any }): React.ReactElement {
   const name = character?.name ?? 'Unbenannt';
-  const meta = [character?.age, character?.race].filter(Boolean).join(' · ');
+  const meta = [character?.age, character?.gender, character?.race].filter(Boolean).join(' · ');
 
   const [open, setOpen] = useState(true);
   const [img, setImg] = useState<string | null>(() => loadImage(name));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // Falls sich die Karte auf einen anderen Charakter ummappt: Bild neu laden.
   useEffect(() => {
     setImg(loadImage(name));
     setErr(null);
@@ -273,7 +277,7 @@ function CharacterCard({ character }: { character: any }): React.ReactElement {
   const handleUpload = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
-      e.target.value = ''; // erlaubt erneutes Wählen derselben Datei
+      e.target.value = '';
       if (!file) return;
       const reader = new FileReader();
       reader.onload = () => {
@@ -296,6 +300,7 @@ function CharacterCard({ character }: { character: any }): React.ReactElement {
   const handled = new Set([
     'name',
     'age',
+    'gender',
     'race',
     'relationships',
     'quests',
@@ -306,17 +311,14 @@ function CharacterCard({ character }: { character: any }): React.ReactElement {
 
   return (
     <div style={styles.card}>
-      {/* Name + Meta + Toggle (immer sichtbar) */}
       <div style={styles.cardHeader} onClick={() => setOpen((o) => !o)}>
         <span style={styles.cardName}>{name}</span>
         {meta && <span style={styles.cardMeta}>{meta}</span>}
         <span style={styles.cardToggle}>{open ? '▾' : '▸'}</span>
       </div>
 
-      {/* Alles Weitere im Einklappbereich – inkl. Bild */}
       {open && (
         <div style={styles.cardBody}>
-          {/* Bild */}
           <div style={styles.portraitWrap}>
             {img ? (
               <img src={img} alt={name} style={styles.portrait} />
@@ -327,7 +329,6 @@ function CharacterCard({ character }: { character: any }): React.ReactElement {
             )}
           </div>
 
-          {/* Drei Buttons: Generieren, Hochladen, Entfernen */}
           <div style={styles.imgButtons}>
             <button style={styles.genBtn} onClick={handleGenerate} disabled={busy}>
               {busy ? '⏳ Generiere…' : img ? '🎨 Neu' : '🎨 Generieren'}
@@ -342,7 +343,6 @@ function CharacterCard({ character }: { character: any }): React.ReactElement {
           </div>
           {err && <div style={styles.errText}>{err}</div>}
 
-          {/* Restliche Felder */}
           {CHAR_GROUPS.map(
             (g) =>
               character[g.key] && <GroupBlock key={g.key} title={g.title} icon={g.icon} obj={character[g.key]} />,
@@ -380,35 +380,43 @@ function CharacterCard({ character }: { character: any }): React.ReactElement {
 }
 
 function SceneHeader({ data }: { data: any }): React.ReactElement {
+  const [open, setOpen] = useState(true);
   const topics = data.topics
     ? [data.topics.primaryTopic, data.topics.emotionalTone, data.topics.interactionTheme].filter(Boolean)
     : [];
   return (
     <div style={styles.scene}>
-      <div style={styles.timeBig}>{data.time ?? '—'}</div>
-      {data.timeElapsed && <div style={styles.timeElapsed}>⏱ {data.timeElapsed}</div>}
-      {data.location && <Row k="location" v={data.location} />}
-      {data.weather && <Row k="weather" v={data.weather} />}
-      {data.changeLog && (
-        <div style={styles.changeLog}>
-          <span style={styles.rowLabel}>Änderungen</span>
-          <span style={styles.changeLogText}>{data.changeLog}</span>
-        </div>
-      )}
-      {topics.length > 0 && (
-        <div style={styles.row}>
-          <span style={styles.rowLabel}>Themen</span>
-          <span style={styles.rowValue}>
-            <Chips items={topics} />
-          </span>
-        </div>
-      )}
-      {Array.isArray(data.charactersPresent) && data.charactersPresent.length > 0 && (
-        <div style={styles.row}>
-          <span style={styles.rowLabel}>Anwesend</span>
-          <span style={styles.rowValue}>
-            <Chips items={data.charactersPresent} />
-          </span>
+      <div style={styles.sceneHead} onClick={() => setOpen((o) => !o)}>
+        <span style={styles.timeBig}>{data.time ?? '—'}</span>
+        <span style={styles.cardToggle}>{open ? '▾' : '▸'}</span>
+      </div>
+      {open && (
+        <div style={styles.sceneBody}>
+          {data.timeElapsed && <div style={styles.timeElapsed}>⏱ {data.timeElapsed}</div>}
+          {data.location && <Row k="location" v={data.location} />}
+          {data.weather && <Row k="weather" v={data.weather} />}
+          {data.changeLog && (
+            <div style={styles.changeLog}>
+              <span style={styles.rowLabel}>Änderungen</span>
+              <span style={styles.changeLogText}>{data.changeLog}</span>
+            </div>
+          )}
+          {topics.length > 0 && (
+            <div style={styles.row}>
+              <span style={styles.rowLabel}>Themen</span>
+              <span style={styles.rowValue}>
+                <Chips items={topics} />
+              </span>
+            </div>
+          )}
+          {Array.isArray(data.charactersPresent) && data.charactersPresent.length > 0 && (
+            <div style={styles.row}>
+              <span style={styles.rowLabel}>Anwesend</span>
+              <span style={styles.rowValue}>
+                <Chips items={data.charactersPresent} />
+              </span>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -419,6 +427,24 @@ function Panel(): React.ReactElement {
   const [open, setOpen] = useState(true);
   const [tick, setTick] = useState(0);
   const refresh = useCallback(() => setTick((t) => t + 1), []);
+
+  const [autoMode, setAutoMode] = useState<string>(() => {
+    try {
+      return settingsManager.getSettings().autoMode as unknown as string;
+    } catch {
+      return 'none';
+    }
+  });
+  const changeAutoMode = useCallback((v: string) => {
+    try {
+      const s = settingsManager.getSettings();
+      s.autoMode = v as AutoModeOptions;
+      settingsManager.saveSettings();
+      setAutoMode(v);
+    } catch (e) {
+      console.error('[WTracker Panel] autoMode save error', e);
+    }
+  }, []);
 
   useEffect(() => {
     const es: any = SillyTavern.getContext().eventSource;
@@ -458,6 +484,22 @@ function Panel(): React.ReactElement {
           </button>
         </div>
       </div>
+
+      <div style={styles.autoModeRow}>
+        <label style={styles.autoModeLabel}>Auto Mode</label>
+        <select
+          style={styles.autoModeSelect}
+          value={autoMode}
+          onChange={(e) => changeAutoMode(e.target.value)}
+        >
+          {AUTO_MODE_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
       <div style={styles.body}>
         {!tracker ? (
           <div style={styles.muted}>Noch keine Tracker-Daten in diesem Chat.</div>
@@ -547,6 +589,25 @@ const styles = {
     borderRadius: '5px',
     lineHeight: 1,
   },
+  autoModeRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    padding: '7px 12px',
+    borderBottom: '1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.1))',
+    background: 'rgba(255,255,255,0.03)',
+  },
+  autoModeLabel: { fontSize: '0.76rem', fontWeight: 600, opacity: 0.75, whiteSpace: 'nowrap' },
+  autoModeSelect: {
+    flex: 1,
+    background: 'var(--SmartThemeBlurTintColor, rgba(0,0,0,0.3))',
+    color: 'inherit',
+    border: '1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.2))',
+    borderRadius: '6px',
+    padding: '4px 6px',
+    fontSize: '0.78rem',
+    cursor: 'pointer',
+  },
   body: { padding: '10px 12px', overflowY: 'auto' },
   reopenTab: {
     position: 'fixed',
@@ -566,9 +627,17 @@ const styles = {
     background: 'rgba(255,255,255,0.04)',
     border: '1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.1))',
     borderRadius: '10px',
-    padding: '9px 11px',
+    padding: '7px 11px 9px',
     marginBottom: '10px',
   },
+  sceneHead: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    cursor: 'pointer',
+    userSelect: 'none',
+  },
+  sceneBody: { marginTop: '6px' },
   timeBig: { fontSize: '1.05rem', fontWeight: 700, letterSpacing: '0.01em' },
   timeElapsed: { fontSize: '0.74rem', opacity: 0.65, fontStyle: 'italic', marginBottom: '6px' },
   changeLog: { marginTop: '4px' },
@@ -587,7 +656,13 @@ const styles = {
     marginBottom: '10px',
     overflow: 'hidden',
   },
-  portraitWrap: { width: '100%', background: 'rgba(0,0,0,0.25)', borderRadius: '8px', overflow: 'hidden', marginBottom: '8px' },
+  portraitWrap: {
+    width: '100%',
+    background: 'rgba(0,0,0,0.25)',
+    borderRadius: '8px',
+    overflow: 'hidden',
+    marginBottom: '8px',
+  },
   portrait: { width: '100%', height: 'auto', maxHeight: '340px', objectFit: 'cover', display: 'block' },
   portraitPlaceholder: {
     width: '100%',

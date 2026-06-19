@@ -36,7 +36,7 @@ export const extensionName = 'SillyTavern-WTracker-Panel';
 export const DEFAULT_PROMPT = `You are a Scene Tracker Assistant. You maintain a clear, consistent, structured tracker for a roleplay. Use the latest message, the previous tracker, and recent context to update every field. Each field must be filled and complete. When something is not stated, make reasonable assumptions from prior descriptions, logical inference, or sensible defaults — never leave a field empty.
 
 ### LANGUAGE RULE (IMPORTANT):
-- All field VALUES shown to the user must be written in **German** (e.g. thoughts, goals, secrets, outfit, location, build, race, etc.).
+- All field VALUES shown to the user must be written in **German** (e.g. thoughts, goals, secrets, outfit, location, build, race, gender, etc.).
 - All JSON KEYS / variable names stay in **English** exactly as defined in the schema. Never translate or rename a key.
 
 ### TIME PROGRESSION — READ FIRST, THIS IS CRITICAL:
@@ -50,7 +50,7 @@ The most common failure is jumping the clock too far. Two sentences of dialogue 
 7. **Format:** "HH:MM:SS; MM/DD/YYYY (Day Name)". Keep date/day consistent unless elapsed time crosses midnight.
 
 ### CHARACTER FIELDS:
-- **name / age / race**: identity basics. age may be approximate ("ca. 300 Jahre"); race can be anything (Mensch, Elf, Zwerg, Kemonomimi, …). Keep these stable once established.
+- **name / age / gender / race**: identity basics. age may be approximate ("ca. 300 Jahre"); gender (männlich, weiblich, divers, ...); race can be anything (Mensch, Elf, Zwerg, Kemonomimi, ...). Keep these stable once established.
 - **appearance.height**: body height (e.g. "ca. 175 cm").
 - **appearance.build**: detailed physique description (body type, proportions, distinctive marks). Write it richly — this field is used to generate images.
 - **appearance.hair**: hairstyle, color, condition.
@@ -76,7 +76,7 @@ The most common failure is jumping the clock too far. Two sentences of dialogue 
 - **mind.secrets**: what the character hides from the others present. Append a status tag per secret: (verborgen), (angedeutet) or (aufgedeckt). Once revealed in-scene, mark it (aufgedeckt) — never treat it as hidden again. Meta-info for the tracker only. Use "Keine bekannt" if nothing is established.
 
 ### RELATIONSHIPS:
-For EACH other present character, give this character's relationship toward them: a short German **status** label (Verbündeter, Rivalin, Fremder, Geliebte, …) and the current **dynamic** (trust, tension, recent shift). Keep relationships consistent and bidirectionally plausible. Update only as the scene shifts them.
+For EACH other present character, give this character's relationship toward them: a short German **status** label (Verbündeter, Rivalin, Fremder, Geliebte, ...) and the current **dynamic** (trust, tension, recent shift). Keep relationships consistent and bidirectionally plausible. Update only as the scene shifts them.
 
 ### QUESTS & SKILLS:
 - **quests**: array of the character's active quests/objectives as short German lines. Keep resolved quests only if still relevant; otherwise drop them.
@@ -90,7 +90,7 @@ For EACH other present character, give this character's relationship toward them
 - **charactersPresent**: array of names currently present.
 
 ### CONSISTENCY MANDATE (CRITICAL):
-- Compare against the previous tracker before writing. Slow layers (time, age, race, appearance, inventory, physicalState, emotionalState, knowledgeState, secrets, relationships, skills) must carry forward and evolve LOGICALLY rather than resetting each update.
+- Compare against the previous tracker before writing. Slow layers (time, age, gender, race, appearance, inventory, physicalState, emotionalState, knowledgeState, secrets, relationships, skills) must carry forward and evolve LOGICALLY rather than resetting each update.
 - Never contradict an established fact, injury, secret status, or relationship without an in-scene cause.
 - timeElapsed, thoughts and changeLog are the fast/reactive layers; everything else should feel persistent.
 - Respond with the FULL tracker every time, even for minor updates.
@@ -186,6 +186,7 @@ export const DEFAULT_SCHEMA_VALUE: object = {
         properties: {
           name: { type: 'string', description: 'Character name' },
           age: { type: 'string', description: "Character age, may be approximate (e.g. 'ca. 300 Jahre')" },
+          gender: { type: 'string', description: 'Character gender (männlich, weiblich, divers, ...)' },
           race: { type: 'string', description: 'Species/race (Mensch, Elf, Zwerg, Kemonomimi, ...)' },
           appearance: {
             type: 'object',
@@ -289,6 +290,7 @@ export const DEFAULT_SCHEMA_VALUE: object = {
         required: [
           'name',
           'age',
+          'gender',
           'race',
           'appearance',
           'clothing',
@@ -307,10 +309,9 @@ export const DEFAULT_SCHEMA_VALUE: object = {
 };
 
 export const DEFAULT_SCHEMA_HTML = `<div class="wtracker_default_mes_template">
-
     <details>
+        <summary><span>Tracker Details</span></summary>
 
-      <summary><span>Tracker Details</span></summary>
         <table>
             <tbody>
                 <tr><td>Zeit:</td><td>{{data.time}}</td></tr>
@@ -337,7 +338,7 @@ export const DEFAULT_SCHEMA_HTML = `<div class="wtracker_default_mes_template">
         <div class="mes_wtracker_characters">
             {{#each data.characters as |character|}}
             <hr>
-            <strong>{{character.name}}</strong> <small>({{character.age}}, {{character.race}})</small><br>
+            <strong>{{character.name}}</strong> <small>({{character.age}}, {{character.gender}}, {{character.race}})</small><br>
             <table>
                 <tbody>
                     <tr><td><strong>Aussehen</strong></td><td></td></tr>
