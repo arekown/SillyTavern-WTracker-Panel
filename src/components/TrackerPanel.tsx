@@ -115,7 +115,7 @@ async function generateImageUrl(prompt: string): Promise<string | null> {
   const ctx: any = SillyTavern.getContext();
   const exec = ctx.executeSlashCommandsWithOptions ?? ctx.executeSlashCommands;
   if (!exec) throw new Error('Slash-Command-API nicht verfügbar.');
-  const res = await exec.call(ctx, `/sd quiet=true ${prompt}`);
+  const res = await exec.call(ctx, `/sd quiet=true solo portrait of ${prompt}`);
   const url = typeof res === 'string' ? res : res?.pipe;
   return typeof url === 'string' && url.trim() ? url.trim() : null;
 }
