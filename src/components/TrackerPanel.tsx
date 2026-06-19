@@ -163,6 +163,71 @@ function applyPlotInjection(goals: PlotGoal[]): void {
 }
 
 // ---------------------------------------------------------------- Quellmaterial sammeln
+
+// Lädt ALLE Einträge aus allen aktiven Lorebooks (global + chat + persona),
+// unabhängig von Triggerwörtern.
+async function gatherAllLorebookEntries(): Promise<string> {
+  const ctx: any = SillyTavern.getContext();
+  const bookNames = new Set<string>();
+
+  // Global ausgewählte Bücher
+  try {
+    const g = ctx.world_info?.globalSelect ?? ctx.selected_world_info ?? (globalThis as any).selected_world_info;
+    if (Array.isArray(g)) g.forEach((n: string) => n && bookNames.add(n));
+  } catch {}
+
+  // An den aktuellen Chat gebundenes Buch
+  try {
+    const chatBook = ctx.chatMetadata?.world_info;
+    if (typeof chatBook === 'string' && chatBook) bookNames.add(chatBook);
+  } catch {}
+
+  // An die Charakterkarte gebundene Bücher (primär + zusätzliche)
+  try {
+    const ch = ctx.characters?.[ctx.characterId];
+    const primary = ch?.data?.extensions?.world;
+    if (typeof primary === 'string' && primary) bookNames.add(primary);
+    const extra = ctx.characters?.[ctx.characterId]?.data?.extensions?.world_info;
+    if (Array.isArray(extra)) extra.forEach((n: string) => n && bookNames.add(n));
+  } catch {}
+
+  const parts: string[] = [];
+
+  // Alle gefundenen Bücher laden
+  for (const name of bookNames) {
+    try {
+      const book = await ctx.loadWorldInfo(name);
+      const entries = book?.entries;
+      if (!entries) continue;
+      for (const key of Object.keys(entries)) {
+        const e = entries[key];
+        if (!e || e.disable) continue;
+        const keys = Array.isArray(e.key) ? e.key.join(', ') : '';
+        const head = (e.comment || keys || '').toString().trim();
+        const content = (e.content || '').toString().trim();
+        if (content) parts.push(head ? `[${head}]\n${content}` : content);
+      }
+    } catch (err) {
+      console.warn('[WTracker Panel] konnte Lorebook nicht laden:', name, err);
+    }
+  }
+
+  // Eingebettetes Charakter-Lorebook (character_book) zusätzlich
+  try {
+    const cb = ctx.characters?.[ctx.characterId]?.data?.character_book;
+    if (cb?.entries?.length) {
+      for (const e of cb.entries) {
+        const content = (e?.content || '').toString().trim();
+        const keys = Array.isArray(e?.keys) ? e.keys.join(', ') : '';
+        if (content) parts.push(keys ? `[${keys}]\n${content}` : content);
+      }
+    }
+  } catch {}
+
+  console.log(`[WTracker Panel] Lorebook-Einträge geladen: ${parts.length} (Bücher: ${[...bookNames].join(', ') || 'keine'})`);
+  return parts.join('\n\n---\n\n');
+}
+
 async function gatherSourceMaterial(): Promise<string> {
   const ctx: any = SillyTavern.getContext();
   const blocks: string[] = [];
@@ -190,26 +255,15 @@ async function gatherSourceMaterial(): Promise<string> {
         .filter(Boolean)
         .join('\n');
       if (card) blocks.push(`### Hauptcharakter\n${card}`);
-      const cb = ch.data?.character_book;
-      if (cb?.entries?.length) {
-        const ents = cb.entries
-          .map((e: any) => e?.content)
-          .filter(Boolean)
-          .join('\n---\n');
-        if (ents) blocks.push(`### Charakter-Lorebook\n${ents}`);
-      }
     }
   } catch (e) {
     console.warn('[WTracker Panel] char read failed', e);
   }
 
-  // World Info / Lorebook (aktive + konstante Einträge)
+// World Info / Lorebook — ALLE Einträge aus allen aktiven Büchern direkt laden
   try {
-    if (typeof ctx.getWorldInfoPrompt === 'function') {
-      const wi = await ctx.getWorldInfoPrompt(ctx.chat ?? [], 100000, true);
-      const wiText = (wi?.worldInfoString ?? wi?.worldInfoBefore ?? '').trim();
-      if (wiText) blocks.push(`### Lorebook / World Info\n${wiText}`);
-    }
+    const ents = await gatherAllLorebookEntries();
+    if (ents) blocks.push(`### Lorebook / World Info\n${ents}`);
   } catch (e) {
     console.warn('[WTracker Panel] world info read failed', e);
   }
