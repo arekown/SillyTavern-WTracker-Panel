@@ -35,6 +35,18 @@ if (!Handlebars.helpers['join']) {
   });
 }
 
+// --- Auto-Trigger-Guard: Bild- oder Leer-Nachrichten überspringen ---
+function shouldSkipForTracker(messageId: number): boolean {
+  const message = globalContext.chat[messageId];
+  if (!message) return true;
+  // Hat ein angehängtes Bild → kein Tracker (verhindert Auslösen bei /sd, Zauberstab, Background)
+  if ((message as any).extra?.image) return true;
+  // Kein substanzieller Text → kein Tracker
+  const text = ((message as any).mes ?? '').toString().trim();
+  if (!text) return true;
+  return false;
+}
+
 // --- Core Logic Functions (ported from original index.ts) ---
 
 function renderTracker(messageId: number) {
@@ -388,14 +400,16 @@ async function initializeGlobalUI() {
 
   // Set up event listeners for auto-mode and chat changes
   const settings = settingsManager.getSettings();
-  globalContext.eventSource.on(
-    EventNames.CHARACTER_MESSAGE_RENDERED,
-    (messageId: number) => incomingTypes.includes(settings.autoMode) && generateTracker(messageId),
-  );
-  globalContext.eventSource.on(
-    EventNames.USER_MESSAGE_RENDERED,
-    (messageId: number) => outgoingTypes.includes(settings.autoMode) && generateTracker(messageId),
-  );
+  globalContext.eventSource.on(EventNames.CHARACTER_MESSAGE_RENDERED, (messageId: number) => {
+    if (!incomingTypes.includes(settings.autoMode)) return;
+    if (shouldSkipForTracker(messageId)) return; // Bild-/Leer-Nachrichten überspringen
+    generateTracker(messageId);
+  });
+  globalContext.eventSource.on(EventNames.USER_MESSAGE_RENDERED, (messageId: number) => {
+    if (!outgoingTypes.includes(settings.autoMode)) return;
+    if (shouldSkipForTracker(messageId)) return; // Bild-/Leer-Nachrichten überspringen
+    generateTracker(messageId);
+  });
   globalContext.eventSource.on(EventNames.CHAT_CHANGED, () => {
     const { saveChat } = globalContext;
     let chatModified = false;
@@ -448,7 +462,7 @@ async function modifyChatMetadata() {
 
   // Render the popup content from the template file
   const popupContent = await globalContext.renderExtensionTemplateAsync(
-    'third-party/SillyTavern-WTracker',
+    `third-party/${extensionName}`,
     'templates/modify_schema_popup',
     templateData,
   );

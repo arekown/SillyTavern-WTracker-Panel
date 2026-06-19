@@ -36,7 +36,7 @@ export const extensionName = 'SillyTavern-WTracker-Panel';
 export const DEFAULT_PROMPT = `You are a Scene Tracker Assistant. You maintain a clear, consistent, structured tracker for a roleplay. Use the latest message, the previous tracker, and recent context to update every field. Each field must be filled and complete. When something is not stated, make reasonable assumptions from prior descriptions, logical inference, or sensible defaults — never leave a field empty.
 
 ### LANGUAGE RULE (IMPORTANT):
-- All field VALUES shown to the user must be written in **German** (e.g. thoughts, goals, secrets, outfit, location, build, race, gender, etc.).
+- All field VALUES shown to the user must be written in **German** (e.g. thoughts, feeling, goals, secrets, outfit, location, build, race, gender, etc.).
 - All JSON KEYS / variable names stay in **English** exactly as defined in the schema. Never translate or rename a key.
 
 ### TIME PROGRESSION — READ FIRST, THIS IS CRITICAL:
@@ -68,9 +68,11 @@ The most common failure is jumping the clock too far. Two sentences of dialogue 
 - **condition.postureAndInteraction**: current physical positioning and interaction.
 - **condition.physicalState** (slow): injuries, exhaustion, intoxication, hunger, pain, arousal. Once established it PERSISTS until the scene changes it. Never silently drop an injury. Use "Unversehrt" if nothing notable.
 
-### MIND (layers change at DIFFERENT speeds — respect that):
-- **mind.emotionalState** (slow): underlying mood/baseline (e.g. "angespannt, unterdrückte Wut, erschöpft"). Changes only gradually; do not swing wildly.
-- **mind.thoughts** (fast): the immediate internal thought right now, inferred from what just happened. May diverge from what the character says or shows — capture that gap. May change every update.
+### MIND — three DISTINCT inner layers; do NOT collapse them into one another:
+- **mind.emotionalState** (SLOW baseline): the underlying mood across the scene (e.g. "angespannt, unterdrückte Wut, erschöpft"). Changes only gradually. This is a short label/phrase.
+- **mind.feeling** (FAST, acute): the momentary emotional sensation RIGHT NOW, triggered by what just happened (e.g. "erleichtert, dass die Wache fort ist, mit einem Anflug von Triumph"). One short sentence or phrase. This is what the character FEELS this instant — NOT what they think.
+- **mind.thoughts** (FAST, concrete inner monologue): This MUST be 3–4 FULL SENTENCES of first-person inner monologue — actual reasoning, intentions, doubts, plans, observations, what the character is weighing or noticing. Write real thinking, e.g. "Wenn ich jetzt nach der Karte greife, bemerkt sie es bestimmt. Besser ich warte, bis sie sich zum Fenster dreht. Aber wie lange habe ich noch, bevor der Hauptmann zurückkommt? Ich darf mir nichts anmerken lassen." 
+  - HARD RULES for thoughts: NEVER a mood label. NEVER a single clause like "Ich fühle mich sicher und wohl" (that belongs in feeling). NEVER bullet points. ALWAYS 3–4 complete sentences. The inner monologue MAY diverge from what the character says or shows outwardly — capture that gap.
 - **mind.goals**: current short-term and (where inferable) long-term goals. Evolve logically; drop goals already achieved or abandoned.
 - **mind.knowledgeState**: what the character currently KNOWS and does NOT know that is relevant. A character must never display knowledge they had no way to obtain. Update only when the scene grants new information.
 - **mind.secrets**: what the character hides from the others present. Append a status tag per secret: (verborgen), (angedeutet) or (aufgedeckt). Once revealed in-scene, mark it (aufgedeckt) — never treat it as hidden again. Meta-info for the tracker only. Use "Keine bekannt" if nothing is established.
@@ -92,10 +94,10 @@ For EACH other present character, give this character's relationship toward them
 ### CONSISTENCY MANDATE (CRITICAL):
 - Compare against the previous tracker before writing. Slow layers (time, age, gender, race, appearance, inventory, physicalState, emotionalState, knowledgeState, secrets, relationships, skills) must carry forward and evolve LOGICALLY rather than resetting each update.
 - Never contradict an established fact, injury, secret status, or relationship without an in-scene cause.
-- timeElapsed, thoughts and changeLog are the fast/reactive layers; everything else should feel persistent.
+- timeElapsed, feeling, thoughts and changeLog are the fast/reactive layers; everything else should feel persistent.
 - Respond with the FULL tracker every time, even for minor updates.
 
-Your objective: clarity, consistency, and complete detail across all layers. Remember: field values in German, JSON keys in English; always reason out timeElapsed before setting the clock.`;
+Your objective: clarity, consistency, and complete detail across all layers. Remember: field values in German, JSON keys in English; reason out timeElapsed before the clock; and keep emotionalState, feeling and thoughts strictly distinct.`;
 
 export const DEFAULT_PROMPT_JSON = `You are a highly specialized AI assistant. Your SOLE purpose is to generate a single, valid JSON object that strictly adheres to the provided JSON schema.
 
@@ -240,15 +242,21 @@ export const DEFAULT_SCHEMA_VALUE: object = {
           },
           mind: {
             type: 'object',
-            description: 'Inner state group',
+            description: 'Inner state group — keep emotionalState, feeling and thoughts strictly distinct',
             properties: {
               emotionalState: {
                 type: 'string',
-                description: 'Slow-moving underlying mood/baseline. Changes only gradually.',
+                description: 'SLOW underlying mood/baseline as a short phrase. Changes only gradually.',
+              },
+              feeling: {
+                type: 'string',
+                description:
+                  'FAST, acute momentary feeling right now (one short sentence/phrase). What the character FEELS this instant — not what they think.',
               },
               thoughts: {
                 type: 'string',
-                description: 'Immediate internal thought right now. May differ from outward behavior. Fast-changing.',
+                description:
+                  'MUST be 3-4 FULL SENTENCES of concrete first-person inner monologue (reasoning, intentions, doubts, plans). NEVER a mood label, NEVER a single clause, NEVER bullet points. May diverge from outward behavior.',
               },
               goals: { type: 'string', description: 'Current short-term and long-term goals. Evolve logically.' },
               knowledgeState: {
@@ -261,7 +269,7 @@ export const DEFAULT_SCHEMA_VALUE: object = {
                   "Hidden info, with status tags (verborgen)/(angedeutet)/(aufgedeckt). 'Keine bekannt' if none.",
               },
             },
-            required: ['emotionalState', 'thoughts', 'goals', 'knowledgeState', 'secrets'],
+            required: ['emotionalState', 'feeling', 'thoughts', 'goals', 'knowledgeState', 'secrets'],
           },
           relationships: {
             type: 'array',
@@ -363,6 +371,7 @@ export const DEFAULT_SCHEMA_HTML = `<div class="wtracker_default_mes_template">
 
                     <tr><td><strong>Geist</strong></td><td></td></tr>
                     <tr><td>Stimmung:</td><td>{{character.mind.emotionalState}}</td></tr>
+                    <tr><td>Gefühl:</td><td>{{character.mind.feeling}}</td></tr>
                     <tr><td>Gedanken:</td><td><em>{{character.mind.thoughts}}</em></td></tr>
                     <tr><td>Ziele:</td><td>{{character.mind.goals}}</td></tr>
                     <tr><td>Wissen:</td><td>{{character.mind.knowledgeState}}</td></tr>

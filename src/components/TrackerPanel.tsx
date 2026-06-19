@@ -13,7 +13,6 @@ const PLOT_PROMPT_KEY = 'WTRACKER_MAINPLOT';
 
 const plotGenerator = new Generator();
 
-// ---------------------------------------------------------------- Hauptplot-Prompt
 const MAIN_PLOT_PROMPT = `You are a master game master. Based ONLY on the provided source material (player character, main character, lorebook / world info, and current scene state), invent 10 candidate MAIN-PLOT goals for a long-running roleplay campaign. The user will pick the ones they like, so make every single one strong and usable on its own.
 
 REQUIREMENTS:
@@ -27,7 +26,6 @@ OUTPUT FORMAT (STRICT):
 Return ONLY a JSON array of exactly 10 strings and nothing else. No markdown, no commentary, no keys.
 Example: ["Ziel eins ...", "Ziel zwei ...", "..."]`;
 
-// ---------------------------------------------------------------- Labels
 const LABELS: Record<string, string> = {
   time: 'Zeit',
   timeElapsed: 'Vergangen',
@@ -50,6 +48,7 @@ const LABELS: Record<string, string> = {
   postureAndInteraction: 'Position',
   physicalState: 'Verfassung',
   emotionalState: 'Stimmung',
+  feeling: 'Gefühl',
   thoughts: 'Gedanken',
   goals: 'Ziele',
   knowledgeState: 'Wissen',
@@ -80,7 +79,6 @@ const AUTO_MODE_OPTIONS: { value: string; label: string }[] = [
   { value: 'both', label: 'Beides verarbeiten' },
 ];
 
-// ---------------------------------------------------------------- Tracker lesen
 function getLatestTracker(): any | null {
   try {
     const ctx = SillyTavern.getContext();
@@ -96,7 +94,6 @@ function getLatestTracker(): any | null {
   return null;
 }
 
-// ---------------------------------------------------------------- Bild-Speicher
 function loadImage(name: string): string | null {
   try {
     const ctx: any = SillyTavern.getContext();
@@ -119,7 +116,6 @@ function clearImage(name: string): void {
   }
 }
 
-// ---------------------------------------------------------------- Hauptplot-Speicher (chat-weit)
 type PlotGoal = { text: string; done: boolean };
 
 function loadPlot(): PlotGoal[] {
@@ -143,7 +139,6 @@ function savePlot(goals: PlotGoal[]): void {
   applyPlotInjection(goals);
 }
 
-// Injiziert die offenen Ziele dauerhaft in den Spiel-Kontext.
 function applyPlotInjection(goals: PlotGoal[]): void {
   try {
     const ctx: any = SillyTavern.getContext();
@@ -162,24 +157,20 @@ function applyPlotInjection(goals: PlotGoal[]): void {
   }
 }
 
-// ---------------------------------------------------------------- Lorebook: ALLE Einträge laden
 async function gatherAllLorebookEntries(): Promise<string> {
   const ctx: any = SillyTavern.getContext();
   const bookNames = new Set<string>();
 
-  // Global ausgewählte Bücher
   try {
     const g = ctx.world_info?.globalSelect ?? ctx.selected_world_info ?? (globalThis as any).selected_world_info;
     if (Array.isArray(g)) g.forEach((n: string) => n && bookNames.add(n));
   } catch {}
 
-  // An den aktuellen Chat gebundenes Buch
   try {
     const chatBook = ctx.chatMetadata?.world_info;
     if (typeof chatBook === 'string' && chatBook) bookNames.add(chatBook);
   } catch {}
 
-  // An die Charakterkarte gebundene Bücher (primär + zusätzliche)
   try {
     const ch = ctx.characters?.[ctx.characterId];
     const primary = ch?.data?.extensions?.world;
@@ -190,7 +181,6 @@ async function gatherAllLorebookEntries(): Promise<string> {
 
   const parts: string[] = [];
 
-  // Alle gefundenen Bücher laden
   for (const name of bookNames) {
     try {
       const book = await ctx.loadWorldInfo(name);
@@ -209,7 +199,6 @@ async function gatherAllLorebookEntries(): Promise<string> {
     }
   }
 
-  // Eingebettetes Charakter-Lorebook (character_book) zusätzlich
   try {
     const cb = ctx.characters?.[ctx.characterId]?.data?.character_book;
     if (cb?.entries?.length) {
@@ -227,12 +216,10 @@ async function gatherAllLorebookEntries(): Promise<string> {
   return parts.join('\n\n---\n\n');
 }
 
-// ---------------------------------------------------------------- Quellmaterial sammeln
 async function gatherSourceMaterial(): Promise<string> {
   const ctx: any = SillyTavern.getContext();
   const blocks: string[] = [];
 
-  // Spielercharakter / Persona
   try {
     const pName = ctx.name1 ?? 'Spieler';
     let pDesc = '';
@@ -242,7 +229,6 @@ async function gatherSourceMaterial(): Promise<string> {
     blocks.push(`### Spielercharakter\nName: ${pName}\n${pDesc}`.trim());
   } catch {}
 
-  // Hauptcharakter (Charakterkarte)
   try {
     const ch = ctx.characters?.[ctx.characterId];
     if (ch) {
@@ -260,7 +246,6 @@ async function gatherSourceMaterial(): Promise<string> {
     console.warn('[WTracker Panel] char read failed', e);
   }
 
-  // World Info / Lorebook — ALLE Einträge aus allen aktiven Büchern
   try {
     const ents = await gatherAllLorebookEntries();
     if (ents) blocks.push(`### Lorebook / World Info\n${ents}`);
@@ -268,7 +253,6 @@ async function gatherSourceMaterial(): Promise<string> {
     console.warn('[WTracker Panel] world info read failed', e);
   }
 
-  // Aktueller Szenen-Zustand
   try {
     const t = getLatestTracker();
     if (t) blocks.push(`### Aktueller Szenen-Zustand (Tracker)\n${JSON.stringify(t, null, 2)}`);
@@ -282,7 +266,6 @@ async function gatherSourceMaterial(): Promise<string> {
   );
 }
 
-// ---------------------------------------------------------------- Plot generieren
 function parseGoals(raw: string): string[] {
   let text = String(raw ?? '').trim();
   const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -340,7 +323,6 @@ async function generatePlotGoals(): Promise<string[]> {
   return parseGoals(content);
 }
 
-// ---------------------------------------------------------------- Bild-Helfer
 function buildImagePrompt(c: any): string {
   const a = c?.appearance ?? {};
   const parts = [
@@ -370,7 +352,6 @@ async function generateImageUrl(prompt: string): Promise<string | null> {
   return typeof url === 'string' && url.trim() ? url.trim() : null;
 }
 
-// ---------------------------------------------------------------- generische Wertdarstellung
 const isPrimitive = (v: any) => v === null || ['string', 'number', 'boolean'].includes(typeof v);
 const isEmpty = (v: any) =>
   v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0);
@@ -484,7 +465,6 @@ function Relationships({ list }: { list: any[] }): React.ReactElement {
   );
 }
 
-// ---------------------------------------------------------------- einklappbare Sektion
 function CollapsibleSection({
   title,
   icon,
@@ -510,7 +490,6 @@ function CollapsibleSection({
   );
 }
 
-// ---------------------------------------------------------------- Allgemein-Inhalt
 function SceneContent({ data }: { data: any }): React.ReactElement {
   const topics = data.topics
     ? [data.topics.primaryTopic, data.topics.emotionalTone, data.topics.interactionTheme].filter(Boolean)
@@ -547,7 +526,6 @@ function SceneContent({ data }: { data: any }): React.ReactElement {
   );
 }
 
-// ---------------------------------------------------------------- Hauptplot-UI (Dauer-Builder)
 function MainPlotSection(props: {
   goals: PlotGoal[];
   suggestions: string[];
@@ -635,7 +613,6 @@ function MainPlotSection(props: {
   );
 }
 
-// ---------------------------------------------------------------- Charakterkarte
 function CharacterCard({ character }: { character: any }): React.ReactElement {
   const name = character?.name ?? 'Unbenannt';
   const meta = [character?.age, character?.gender, character?.race].filter(Boolean).join(' · ');
@@ -776,7 +753,6 @@ function CharacterCard({ character }: { character: any }): React.ReactElement {
   );
 }
 
-// ---------------------------------------------------------------- Panel
 function Panel(): React.ReactElement {
   const [open, setOpen] = useState(true);
   const [tick, setTick] = useState(0);
@@ -800,13 +776,11 @@ function Panel(): React.ReactElement {
     }
   }, []);
 
-  // Hauptplot-Zustand
   const [plotGoals, setPlotGoals] = useState<PlotGoal[]>(() => loadPlot());
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [plotBusy, setPlotBusy] = useState(false);
   const [plotErr, setPlotErr] = useState<string | null>(null);
 
-  // Plot bei Chatwechsel/Mount neu laden + injizieren (läuft auch wenn Panel zu ist)
   useEffect(() => {
     const g = loadPlot();
     setPlotGoals(g);
@@ -948,7 +922,6 @@ export function mountTrackerPanel(): void {
   );
 }
 
-// ---------------------------------------------------------------- Styles
 function tag(color: string): React.CSSProperties {
   return {
     display: 'inline-block',
