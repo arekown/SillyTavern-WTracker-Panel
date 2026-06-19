@@ -4,9 +4,9 @@ import { EventNames } from 'sillytavern-utils-lib/types';
 import { EXTENSION_KEY } from '../config.js';
 
 const VALUE_KEY = 'value';
+const IMG_KEY = 'WTrackerPanelImages'; // eigener Settings-Bereich für gespeicherte Portraits
 
-// Deutsche Labels. Unbekannte Schlüssel werden automatisch humanisiert,
-// damit künftige Schema-Felder ohne Code-Änderung erscheinen.
+// Deutsche Labels. Unbekannte Schlüssel werden automatisch humanisiert.
 const LABELS: Record<string, string> = {
   time: 'Zeit',
   timeElapsed: 'Vergangen',
@@ -44,7 +44,6 @@ function humanize(key: string): string {
 }
 const label = (key: string) => LABELS[key] ?? humanize(key);
 
-// Charakter-Gruppen in fester Reihenfolge mit Icon + Überschrift.
 const CHAR_GROUPS: { key: string; title: string; icon: string }[] = [
   { key: 'appearance', title: 'Aussehen', icon: '🧍' },
   { key: 'clothing', title: 'Kleidung', icon: '👕' },
@@ -53,6 +52,7 @@ const CHAR_GROUPS: { key: string; title: string; icon: string }[] = [
   { key: 'mind', title: 'Geist', icon: '🧠' },
 ];
 
+// --- Daten lesen ---
 function getLatestTracker(): any | null {
   try {
     const ctx = SillyTavern.getContext();
@@ -68,11 +68,63 @@ function getLatestTracker(): any | null {
   return null;
 }
 
+// --- Bild-Speicher (pro Charaktername, persistiert) ---
+function loadImage(name: string): string | null {
+  try {
+    const ctx: any = SillyTavern.getContext();
+    return ctx.extensionSettings?.[IMG_KEY]?.[name] ?? null;
+  } catch {
+    return null;
+  }
+}
+function saveImage(name: string, url: string): void {
+  const ctx: any = SillyTavern.getContext();
+  if (!ctx.extensionSettings[IMG_KEY]) ctx.extensionSettings[IMG_KEY] = {};
+  ctx.extensionSettings[IMG_KEY][name] = url;
+  ctx.saveSettingsDebounced();
+}
+function clearImage(name: string): void {
+  const ctx: any = SillyTavern.getContext();
+  if (ctx.extensionSettings?.[IMG_KEY]?.[name]) {
+    delete ctx.extensionSettings[IMG_KEY][name];
+    ctx.saveSettingsDebounced();
+  }
+}
+
+// --- Bild-Prompt aus Tracker-Feldern bauen ---
+function buildImagePrompt(c: any): string {
+  const a = c?.appearance ?? {};
+  const parts = [
+    c?.race,
+    a.build,
+    a.hair && `${a.hair} hair`,
+    a.eyeColor && `${a.eyeColor} eyes`,
+    a.makeup && a.makeup !== 'Kein Make-up' ? a.makeup : null,
+    c?.clothing?.outfit,
+    'detailed character portrait',
+  ].filter(Boolean);
+  return parts
+    .join(', ')
+    .replace(/[\r\n|]+/g, ' ')
+    .replace(/\{\{|\}\}/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// --- /sd aufrufen und URL aus der Pipe holen ---
+async function generateImageUrl(prompt: string): Promise<string | null> {
+  const ctx: any = SillyTavern.getContext();
+  const exec = ctx.executeSlashCommandsWithOptions ?? ctx.executeSlashCommands;
+  if (!exec) throw new Error('Slash-Command-API nicht verfügbar.');
+  const res = await exec.call(ctx, `/sd quiet=true ${prompt}`);
+  const url = typeof res === 'string' ? res : res?.pipe;
+  return typeof url === 'string' && url.trim() ? url.trim() : null;
+}
+
 const isPrimitive = (v: any) => v === null || ['string', 'number', 'boolean'].includes(typeof v);
 const isEmpty = (v: any) =>
   v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0);
 
-// Färbt die Status-Tags in Geheimnissen ein.
 function renderSecrets(text: string): React.ReactNode {
   const parts = text.split(/(\((?:verborgen|angedeutet|aufgedeckt)\))/gi);
   return parts.map((p, i) => {
@@ -104,7 +156,6 @@ function Chips({ items }: { items: any[] }): React.ReactElement {
   );
 }
 
-// Generische Wertdarstellung (Fallback für unbekannte Strukturen).
 function Value({ field, value }: { field: string; value: any }): React.ReactElement {
   if (isEmpty(value)) return <span style={styles.muted}>—</span>;
   if (field === 'secrets' && typeof value === 'string') return <>{renderSecrets(value)}</>;
@@ -184,21 +235,91 @@ function Relationships({ list }: { list: any[] }): React.ReactElement {
 }
 
 function CharacterCard({ character }: { character: any }): React.ReactElement {
-  const [open, setOpen] = useState(true);
   const name = character?.name ?? 'Unbenannt';
   const meta = [character?.age, character?.race].filter(Boolean).join(' · ');
 
-  // Bekannte Schlüssel, die separat behandelt werden:
-  const handled = new Set(['name', 'age', 'race', 'relationships', 'quests', 'skills', ...CHAR_GROUPS.map((g) => g.key)]);
+  const [open, setOpen] = useState(true);
+  const [img, setImg] = useState<string | null>(() => loadImage(name));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Falls sich die Karte auf einen anderen Charakter ummappt: Bild neu laden.
+  useEffect(() => {
+    setImg(loadImage(name));
+    setErr(null);
+  }, [name]);
+
+  const handleGenerate = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const prompt = buildImagePrompt(character);
+      const url = await generateImageUrl(prompt);
+      if (url) {
+        saveImage(name, url);
+        setImg(url);
+      } else {
+        setErr('Keine Bild-URL erhalten.');
+      }
+    } catch (e: any) {
+      console.error('[WTracker Panel] image gen error', e);
+      setErr(e?.message ?? 'Fehler bei der Generierung.');
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, character, name]);
+
+  const handleClear = useCallback(() => {
+    clearImage(name);
+    setImg(null);
+  }, [name]);
+
+  const handled = new Set([
+    'name',
+    'age',
+    'race',
+    'relationships',
+    'quests',
+    'skills',
+    ...CHAR_GROUPS.map((g) => g.key),
+  ]);
   const extraKeys = Object.keys(character).filter((k) => !handled.has(k));
 
   return (
     <div style={styles.card}>
+      {/* Bild zuerst */}
+      <div style={styles.portraitWrap}>
+        {img ? (
+          <img src={img} alt={name} style={styles.portrait} />
+        ) : (
+          <div style={styles.portraitPlaceholder}>
+            <span style={{ opacity: 0.5 }}>kein Bild</span>
+          </div>
+        )}
+      </div>
+
+      {/* Name + Meta + Toggle */}
       <div style={styles.cardHeader} onClick={() => setOpen((o) => !o)}>
         <span style={styles.cardName}>{name}</span>
         {meta && <span style={styles.cardMeta}>{meta}</span>}
         <span style={styles.cardToggle}>{open ? '▾' : '▸'}</span>
       </div>
+
+      {/* Bild-Buttons */}
+      <div style={styles.imgButtons}>
+        <button style={styles.genBtn} onClick={handleGenerate} disabled={busy}>
+          {busy ? '⏳ Generiere…' : img ? '🎨 Neu generieren' : '🎨 Bild generieren'}
+        </button>
+        {img && (
+          <button style={styles.clearBtn} onClick={handleClear} title="Bild entfernen">
+            ✕
+          </button>
+        )}
+      </div>
+      {err && <div style={styles.errText}>{err}</div>}
+
+      {/* Restliche Felder */}
       {open && (
         <div style={styles.cardBody}>
           {CHAR_GROUPS.map(
@@ -352,7 +473,6 @@ export function mountTrackerPanel(): void {
   );
 }
 
-// --- Styling ---
 function tag(color: string): React.CSSProperties {
   return {
     display: 'inline-block',
@@ -446,6 +566,16 @@ const styles = {
     marginBottom: '10px',
     overflow: 'hidden',
   },
+  portraitWrap: { width: '100%', background: 'rgba(0,0,0,0.25)' },
+  portrait: { width: '100%', height: 'auto', maxHeight: '340px', objectFit: 'cover', display: 'block' },
+  portraitPlaceholder: {
+    width: '100%',
+    height: '120px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: '0.78rem',
+  },
   cardHeader: {
     display: 'flex',
     alignItems: 'baseline',
@@ -459,6 +589,28 @@ const styles = {
   cardName: { fontWeight: 700, fontSize: '0.95rem' },
   cardMeta: { fontSize: '0.74rem', opacity: 0.6 },
   cardToggle: { marginLeft: 'auto', opacity: 0.6, fontSize: '0.8rem' },
+  imgButtons: { display: 'flex', gap: '6px', padding: '7px 10px 4px' },
+  genBtn: {
+    flex: 1,
+    background: 'var(--crimson70a, rgba(91,127,180,0.25))',
+    color: 'inherit',
+    border: '1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.18))',
+    borderRadius: '6px',
+    padding: '5px 8px',
+    cursor: 'pointer',
+    fontSize: '0.78rem',
+    fontWeight: 600,
+  },
+  clearBtn: {
+    background: 'transparent',
+    color: 'inherit',
+    border: '1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.18))',
+    borderRadius: '6px',
+    padding: '5px 9px',
+    cursor: 'pointer',
+    fontSize: '0.78rem',
+  },
+  errText: { color: '#e06c75', fontSize: '0.74rem', padding: '0 10px 4px' },
   cardBody: { padding: '8px 10px' },
   group: { marginBottom: '8px' },
   groupHead: {
