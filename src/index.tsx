@@ -2,6 +2,8 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { settingsManager, WTrackerSettings } from './components/Settings.js';
 
+import { mountTrackerPanel } from './components/TrackerPanel.js';
+
 import { buildPrompt, Message, Generator } from 'sillytavern-utils-lib';
 import { ChatMessage, EventNames, ExtractedData } from 'sillytavern-utils-lib/types';
 import { characters, name1, selected_group, st_echo } from 'sillytavern-utils-lib/config';
@@ -496,6 +498,7 @@ function renderReactSettings() {
 function main() {
   renderReactSettings();
   initializeGlobalUI();
+  mountTrackerPanel();
 }
 
 settingsManager

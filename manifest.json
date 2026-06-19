@@ -1,12 +1,12 @@
 {
-    "display_name": "WTracker",
+    "display_name": "WTracker Panel",
     "loading_order": 300,
     "requires": [],
     "optional": [],
     "js": "dist/index.js",
     "css": "dist/style.css",
-    "author": "bmen25124",
+    "author": "areko (Fork von bmen25124)",
     "version": "0.1.1",
-    "homePage": "https://github.com/bmen25124/SillyTavern-WTracker",
+    "homePage": "https://github.com/arekown/SillyTavern-WTracker-Panel",
     "generate_interceptor": "wtrackerGenerateInterceptor"
 }
