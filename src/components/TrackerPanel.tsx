@@ -90,7 +90,6 @@ function clearImage(name: string): void {
     ctx.saveSettingsDebounced();
   }
 }
-
 // --- Bild-Prompt aus Tracker-Feldern bauen ---
 function buildImagePrompt(c: any): string {
   const a = c?.appearance ?? {};
