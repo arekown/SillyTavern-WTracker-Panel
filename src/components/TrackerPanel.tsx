@@ -90,6 +90,7 @@ function clearImage(name: string): void {
     ctx.saveSettingsDebounced();
   }
 }
+
 // --- Bild-Prompt aus Tracker-Feldern bauen ---
 function buildImagePrompt(c: any): string {
   const a = c?.appearance ?? {};
@@ -100,7 +101,7 @@ function buildImagePrompt(c: any): string {
     a.eyeColor && `${a.eyeColor} eyes`,
     a.makeup && a.makeup !== 'Kein Make-up' ? a.makeup : null,
     c?.clothing?.outfit,
-    'detailed character portrait',
+    'solo portrait',
   ].filter(Boolean);
   return parts
     .join(', ')
@@ -115,7 +116,7 @@ async function generateImageUrl(prompt: string): Promise<string | null> {
   const ctx: any = SillyTavern.getContext();
   const exec = ctx.executeSlashCommandsWithOptions ?? ctx.executeSlashCommands;
   if (!exec) throw new Error('Slash-Command-API nicht verfügbar.');
-  const res = await exec.call(ctx, `/sd quiet=true solo portrait of ${prompt}`);
+  const res = await exec.call(ctx, `/sd quiet=true solo portrait ${prompt}`);
   const url = typeof res === 'string' ? res : res?.pipe;
   return typeof url === 'string' && url.trim() ? url.trim() : null;
 }
@@ -269,6 +270,24 @@ function CharacterCard({ character }: { character: any }): React.ReactElement {
     }
   }, [busy, character, name]);
 
+  const handleUpload = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      e.target.value = ''; // erlaubt erneutes Wählen derselben Datei
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const url = String(reader.result);
+        saveImage(name, url);
+        setImg(url);
+        setErr(null);
+      };
+      reader.onerror = () => setErr('Datei konnte nicht gelesen werden.');
+      reader.readAsDataURL(file);
+    },
+    [name],
+  );
+
   const handleClear = useCallback(() => {
     clearImage(name);
     setImg(null);
@@ -287,40 +306,43 @@ function CharacterCard({ character }: { character: any }): React.ReactElement {
 
   return (
     <div style={styles.card}>
-      {/* Bild zuerst */}
-      <div style={styles.portraitWrap}>
-        {img ? (
-          <img src={img} alt={name} style={styles.portrait} />
-        ) : (
-          <div style={styles.portraitPlaceholder}>
-            <span style={{ opacity: 0.5 }}>kein Bild</span>
-          </div>
-        )}
-      </div>
-
-      {/* Name + Meta + Toggle */}
+      {/* Name + Meta + Toggle (immer sichtbar) */}
       <div style={styles.cardHeader} onClick={() => setOpen((o) => !o)}>
         <span style={styles.cardName}>{name}</span>
         {meta && <span style={styles.cardMeta}>{meta}</span>}
         <span style={styles.cardToggle}>{open ? '▾' : '▸'}</span>
       </div>
 
-      {/* Bild-Buttons */}
-      <div style={styles.imgButtons}>
-        <button style={styles.genBtn} onClick={handleGenerate} disabled={busy}>
-          {busy ? '⏳ Generiere…' : img ? '🎨 Neu generieren' : '🎨 Bild generieren'}
-        </button>
-        {img && (
-          <button style={styles.clearBtn} onClick={handleClear} title="Bild entfernen">
-            ✕
-          </button>
-        )}
-      </div>
-      {err && <div style={styles.errText}>{err}</div>}
-
-      {/* Restliche Felder */}
+      {/* Alles Weitere im Einklappbereich – inkl. Bild */}
       {open && (
         <div style={styles.cardBody}>
+          {/* Bild */}
+          <div style={styles.portraitWrap}>
+            {img ? (
+              <img src={img} alt={name} style={styles.portrait} />
+            ) : (
+              <div style={styles.portraitPlaceholder}>
+                <span style={{ opacity: 0.5 }}>kein Bild</span>
+              </div>
+            )}
+          </div>
+
+          {/* Drei Buttons: Generieren, Hochladen, Entfernen */}
+          <div style={styles.imgButtons}>
+            <button style={styles.genBtn} onClick={handleGenerate} disabled={busy}>
+              {busy ? '⏳ Generiere…' : img ? '🎨 Neu' : '🎨 Generieren'}
+            </button>
+            <label style={styles.uploadBtn} title="Bild hochladen">
+              ⬆ Hochladen
+              <input type="file" accept="image/*" onChange={handleUpload} style={{ display: 'none' }} />
+            </label>
+            <button style={styles.clearBtn} onClick={handleClear} disabled={!img} title="Bild entfernen">
+              🗑
+            </button>
+          </div>
+          {err && <div style={styles.errText}>{err}</div>}
+
+          {/* Restliche Felder */}
           {CHAR_GROUPS.map(
             (g) =>
               character[g.key] && <GroupBlock key={g.key} title={g.title} icon={g.icon} obj={character[g.key]} />,
@@ -565,7 +587,7 @@ const styles = {
     marginBottom: '10px',
     overflow: 'hidden',
   },
-  portraitWrap: { width: '100%', background: 'rgba(0,0,0,0.25)' },
+  portraitWrap: { width: '100%', background: 'rgba(0,0,0,0.25)', borderRadius: '8px', overflow: 'hidden', marginBottom: '8px' },
   portrait: { width: '100%', height: 'auto', maxHeight: '340px', objectFit: 'cover', display: 'block' },
   portraitPlaceholder: {
     width: '100%',
@@ -588,7 +610,7 @@ const styles = {
   cardName: { fontWeight: 700, fontSize: '0.95rem' },
   cardMeta: { fontSize: '0.74rem', opacity: 0.6 },
   cardToggle: { marginLeft: 'auto', opacity: 0.6, fontSize: '0.8rem' },
-  imgButtons: { display: 'flex', gap: '6px', padding: '7px 10px 4px' },
+  imgButtons: { display: 'flex', gap: '6px', marginBottom: '6px' },
   genBtn: {
     flex: 1,
     background: 'var(--crimson70a, rgba(91,127,180,0.25))',
@@ -600,6 +622,18 @@ const styles = {
     fontSize: '0.78rem',
     fontWeight: 600,
   },
+  uploadBtn: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    background: 'transparent',
+    color: 'inherit',
+    border: '1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.18))',
+    borderRadius: '6px',
+    padding: '5px 9px',
+    cursor: 'pointer',
+    fontSize: '0.78rem',
+    whiteSpace: 'nowrap',
+  },
   clearBtn: {
     background: 'transparent',
     color: 'inherit',
@@ -609,7 +643,7 @@ const styles = {
     cursor: 'pointer',
     fontSize: '0.78rem',
   },
-  errText: { color: '#e06c75', fontSize: '0.74rem', padding: '0 10px 4px' },
+  errText: { color: '#e06c75', fontSize: '0.74rem', marginBottom: '4px' },
   cardBody: { padding: '8px 10px' },
   group: { marginBottom: '8px' },
   groupHead: {
