@@ -14,13 +14,13 @@ const PLOT_PROMPT_KEY = 'WTRACKER_MAINPLOT';
 const plotGenerator = new Generator();
 
 // ---------------------------------------------------------------- Hauptplot-Prompt
-const MAIN_PLOT_PROMPT = `You are a master game master. Based ONLY on the provided source material (player character, main character, lorebook / world info, and current scene state), invent the overarching MAIN PLOT of a long-running roleplay campaign as exactly 10 high-level long-term goals.
+const MAIN_PLOT_PROMPT = `You are a master game master. Based ONLY on the provided source material (player character, main character, lorebook / world info, and current scene state), invent 10 candidate MAIN-PLOT goals for a long-running roleplay campaign. The user will pick the ones they like, so make every single one strong and usable on its own.
 
 REQUIREMENTS:
 - Each goal must be a MAJOR, long-horizon objective that takes a VERY long time to achieve — not resolvable in a few scenes. Think arcs spanning the whole campaign.
 - Ground every goal concretely in the given world: use its factions, places, characters, conflicts and lore. NO generic filler like "become the strongest" or "save the world" unless the lore explicitly demands it.
-- Make the goals diverse: mix personal, political, relational, mysterious and world-level stakes where the lore supports it.
-- Order them roughly from earlier-reachable to most distant and epic.
+- Provide a DIVERSE MIX of plot DIRECTIONS across the 10 goals — ideally 10 clearly different kinds, for example: social, epic / heroic, political, personal, romantic, mysterious / investigative, economic, exploratory, moral / ethical, and factional. Do NOT cluster them all into one direction; spread them across as many directions as the lore plausibly supports.
+- You may order them roughly from nearer-reachable to most distant and epic.
 - Write each goal in GERMAN, as a single clear sentence.
 
 OUTPUT FORMAT (STRICT):
@@ -162,10 +162,7 @@ function applyPlotInjection(goals: PlotGoal[]): void {
   }
 }
 
-// ---------------------------------------------------------------- Quellmaterial sammeln
-
-// Lädt ALLE Einträge aus allen aktiven Lorebooks (global + chat + persona),
-// unabhängig von Triggerwörtern.
+// ---------------------------------------------------------------- Lorebook: ALLE Einträge laden
 async function gatherAllLorebookEntries(): Promise<string> {
   const ctx: any = SillyTavern.getContext();
   const bookNames = new Set<string>();
@@ -224,10 +221,13 @@ async function gatherAllLorebookEntries(): Promise<string> {
     }
   } catch {}
 
-  console.log(`[WTracker Panel] Lorebook-Einträge geladen: ${parts.length} (Bücher: ${[...bookNames].join(', ') || 'keine'})`);
+  console.log(
+    `[WTracker Panel] Lorebook-Einträge geladen: ${parts.length} (Bücher: ${[...bookNames].join(', ') || 'keine'})`,
+  );
   return parts.join('\n\n---\n\n');
 }
 
+// ---------------------------------------------------------------- Quellmaterial sammeln
 async function gatherSourceMaterial(): Promise<string> {
   const ctx: any = SillyTavern.getContext();
   const blocks: string[] = [];
@@ -260,7 +260,7 @@ async function gatherSourceMaterial(): Promise<string> {
     console.warn('[WTracker Panel] char read failed', e);
   }
 
-// World Info / Lorebook — ALLE Einträge aus allen aktiven Büchern direkt laden
+  // World Info / Lorebook — ALLE Einträge aus allen aktiven Büchern
   try {
     const ents = await gatherAllLorebookEntries();
     if (ents) blocks.push(`### Lorebook / World Info\n${ents}`);
@@ -296,7 +296,6 @@ function parseGoals(raw: string): string[] {
         .slice(0, 10);
     }
   } catch {}
-  // Fallback: zeilenweise, Nummerierung entfernen
   return String(raw ?? '')
     .split('\n')
     .map((l) => l.replace(/^\s*(?:\d+[.)]|[-*•])\s*/, '').trim())
@@ -548,78 +547,87 @@ function SceneContent({ data }: { data: any }): React.ReactElement {
   );
 }
 
-// ---------------------------------------------------------------- Hauptplot-UI
+// ---------------------------------------------------------------- Hauptplot-UI (Dauer-Builder)
 function MainPlotSection(props: {
   goals: PlotGoal[];
-  pending: string[] | null;
+  suggestions: string[];
   busy: boolean;
   err: string | null;
+  isInPlot: (text: string) => boolean;
   onGenerate: () => void;
-  onAccept: () => void;
-  onDiscard: () => void;
-  onToggle: (i: number) => void;
-  onRegenerate: () => void;
+  onClearSuggestions: () => void;
+  onToggleSuggestion: (text: string) => void;
+  onToggleGoalDone: (i: number) => void;
 }): React.ReactElement {
-  const { goals, pending, busy, err, onGenerate, onAccept, onDiscard, onToggle, onRegenerate } = props;
-
-  if (pending) {
-    return (
-      <div>
-        <div style={styles.plotHint}>Vorschlag — prüfen, dann übernehmen oder verwerfen:</div>
-        <ol style={styles.plotPendingList}>
-          {pending.map((g, i) => (
-            <li key={i} style={styles.plotPendingItem}>
-              {g}
-            </li>
-          ))}
-        </ol>
-        <div style={styles.plotButtons}>
-          <button style={styles.genBtn} onClick={onAccept} disabled={busy}>
-            ✓ Übernehmen
-          </button>
-          <button style={styles.clearBtn} onClick={onGenerate} disabled={busy} title="Neuen Vorschlag würfeln">
-            🎲
-          </button>
-          <button style={styles.clearBtn} onClick={onDiscard} disabled={busy} title="Verwerfen">
-            ✕
-          </button>
-        </div>
-        {err && <div style={styles.errText}>{err}</div>}
-      </div>
-    );
-  }
-
-  if (!goals.length) {
-    return (
-      <div>
-        <div style={styles.plotHint}>
-          Noch kein Hauptplot. Generiere 10 übergeordnete Langzeitziele aus Lorebook und Charakter.
-        </div>
-        <button style={styles.genBtn} onClick={onGenerate} disabled={busy}>
-          {busy ? '⏳ Generiere…' : '🎯 Hauptplot generieren'}
-        </button>
-        {err && <div style={styles.errText}>{err}</div>}
-      </div>
-    );
-  }
+  const {
+    goals,
+    suggestions,
+    busy,
+    err,
+    isInPlot,
+    onGenerate,
+    onClearSuggestions,
+    onToggleSuggestion,
+    onToggleGoalDone,
+  } = props;
 
   const doneCount = goals.filter((g) => g.done).length;
+
   return (
     <div>
-      <div style={styles.plotProgress}>
-        {doneCount} / {goals.length} erreicht
-      </div>
-      <div>
-        {goals.map((g, i) => (
-          <label key={i} style={styles.goalRow}>
-            <input type="checkbox" checked={g.done} onChange={() => onToggle(i)} style={styles.goalCheck} />
-            <span style={g.done ? styles.goalTextDone : styles.goalText}>{g.text}</span>
-          </label>
-        ))}
-      </div>
+      {goals.length > 0 && (
+        <div style={{ marginBottom: '10px' }}>
+          <div style={styles.plotProgress}>
+            Aktive Hauptplots — {doneCount} / {goals.length} erreicht
+          </div>
+          {goals.map((g, i) => (
+            <label key={i} style={styles.goalRow}>
+              <input
+                type="checkbox"
+                checked={g.done}
+                onChange={() => onToggleGoalDone(i)}
+                style={styles.goalCheck}
+                title="Als erreicht/erledigt markieren"
+              />
+              <span style={g.done ? styles.goalTextDone : styles.goalText}>{g.text}</span>
+            </label>
+          ))}
+        </div>
+      )}
+
+      {suggestions.length > 0 && (
+        <div style={styles.suggestBox}>
+          <div style={styles.suggestHead}>
+            <span>Vorschläge — anhaken zum Übernehmen</span>
+            <button style={styles.miniBtn} onClick={onClearSuggestions} title="Vorschläge schließen">
+              ✕
+            </button>
+          </div>
+          {suggestions.map((s, i) => (
+            <label key={i} style={styles.goalRow}>
+              <input
+                type="checkbox"
+                checked={isInPlot(s)}
+                onChange={() => onToggleSuggestion(s)}
+                style={styles.goalCheck}
+                title="In den Hauptplot übernehmen"
+              />
+              <span style={isInPlot(s) ? styles.suggestAdded : styles.goalText}>{s}</span>
+            </label>
+          ))}
+        </div>
+      )}
+
+      {goals.length === 0 && suggestions.length === 0 && (
+        <div style={styles.plotHint}>
+          Noch kein Hauptplot. Generiere Vorschläge und hake an, was dir gefällt — du kannst beliebig oft
+          nachgenerieren und weitere übernehmen.
+        </div>
+      )}
+
       <div style={{ marginTop: '8px' }}>
-        <button style={styles.regenLink} onClick={onRegenerate} disabled={busy}>
-          {busy ? '⏳ …' : '↻ Neu generieren'}
+        <button style={styles.genBtn} onClick={onGenerate} disabled={busy}>
+          {busy ? '⏳ Generiere…' : suggestions.length > 0 ? '🎲 Weitere 10 würfeln' : '🎯 Vorschläge generieren'}
         </button>
       </div>
       {err && <div style={styles.errText}>{err}</div>}
@@ -794,7 +802,7 @@ function Panel(): React.ReactElement {
 
   // Hauptplot-Zustand
   const [plotGoals, setPlotGoals] = useState<PlotGoal[]>(() => loadPlot());
-  const [plotPending, setPlotPending] = useState<string[] | null>(null);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
   const [plotBusy, setPlotBusy] = useState(false);
   const [plotErr, setPlotErr] = useState<string | null>(null);
 
@@ -802,7 +810,7 @@ function Panel(): React.ReactElement {
   useEffect(() => {
     const g = loadPlot();
     setPlotGoals(g);
-    setPlotPending(null);
+    setSuggestions([]);
     setPlotErr(null);
     applyPlotInjection(g);
   }, [tick]);
@@ -821,14 +829,14 @@ function Panel(): React.ReactElement {
     };
   }, [refresh]);
 
-  const doGenerate = useCallback(async () => {
+  const genSuggestions = useCallback(async () => {
     if (plotBusy) return;
     setPlotBusy(true);
     setPlotErr(null);
     try {
       const goals = await generatePlotGoals();
-      if (!goals.length) setPlotErr('Keine Ziele erhalten — evtl. Antwort des Modells prüfen (Konsole).');
-      else setPlotPending(goals);
+      if (!goals.length) setPlotErr('Keine Vorschläge erhalten — Antwort des Modells prüfen (Konsole).');
+      else setSuggestions(goals);
     } catch (e: any) {
       console.error('[WTracker Panel] plot gen error', e);
       setPlotErr(e?.message ?? 'Fehler bei der Generierung.');
@@ -837,17 +845,18 @@ function Panel(): React.ReactElement {
     }
   }, [plotBusy]);
 
-  const acceptPending = useCallback(() => {
-    if (!plotPending) return;
-    const goals = plotPending.map((t) => ({ text: t, done: false }));
-    savePlot(goals);
-    setPlotGoals(goals);
-    setPlotPending(null);
-  }, [plotPending]);
+  const isInPlot = useCallback((text: string) => plotGoals.some((g) => g.text === text), [plotGoals]);
 
-  const discardPending = useCallback(() => setPlotPending(null), []);
+  const toggleSuggestion = useCallback((text: string) => {
+    setPlotGoals((prev) => {
+      const exists = prev.some((g) => g.text === text);
+      const next = exists ? prev.filter((g) => g.text !== text) : [...prev, { text, done: false }];
+      savePlot(next);
+      return next;
+    });
+  }, []);
 
-  const toggleGoal = useCallback((i: number) => {
+  const toggleGoalDone = useCallback((i: number) => {
     setPlotGoals((prev) => {
       const next = prev.map((g, idx) => (idx === i ? { ...g, done: !g.done } : g));
       savePlot(next);
@@ -855,20 +864,7 @@ function Panel(): React.ReactElement {
     });
   }, []);
 
-  const regenerate = useCallback(async () => {
-    try {
-      const ctx: any = SillyTavern.getContext();
-      const ok = await ctx.Popup.show.confirm(
-        'Hauptplot neu generieren',
-        'Den bestehenden Hauptplot verwerfen und einen neuen erzeugen? Das kann nicht rückgängig gemacht werden.',
-      );
-      if (!ok) return;
-    } catch {
-      // Falls Popup nicht verfügbar: lieber abbrechen als versehentlich löschen
-      return;
-    }
-    doGenerate();
-  }, [doGenerate]);
+  const clearSuggestions = useCallback(() => setSuggestions([]), []);
 
   const tracker = useMemo(() => getLatestTracker(), [tick]);
   const characters = Array.isArray(tracker?.characters) ? tracker.characters : [];
@@ -914,14 +910,14 @@ function Panel(): React.ReactElement {
         <CollapsibleSection title="Hauptplot" icon="🎯">
           <MainPlotSection
             goals={plotGoals}
-            pending={plotPending}
+            suggestions={suggestions}
             busy={plotBusy}
             err={plotErr}
-            onGenerate={doGenerate}
-            onAccept={acceptPending}
-            onDiscard={discardPending}
-            onToggle={toggleGoal}
-            onRegenerate={regenerate}
+            isInPlot={isInPlot}
+            onGenerate={genSuggestions}
+            onClearSuggestions={clearSuggestions}
+            onToggleSuggestion={toggleSuggestion}
+            onToggleGoalDone={toggleGoalDone}
           />
         </CollapsibleSection>
 
@@ -1074,9 +1070,34 @@ const styles = {
     textTransform: 'uppercase',
     letterSpacing: '0.04em',
   },
-  plotPendingList: { margin: '0 0 8px', paddingLeft: '20px' },
-  plotPendingItem: { marginBottom: '4px', lineHeight: 1.4 },
-  plotButtons: { display: 'flex', gap: '6px' },
+  suggestBox: {
+    border: '1px dashed var(--SmartThemeBorderColor, rgba(255,255,255,0.2))',
+    borderRadius: '8px',
+    padding: '7px 9px',
+    marginBottom: '8px',
+    background: 'rgba(255,255,255,0.03)',
+  },
+  suggestHead: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    fontSize: '0.72rem',
+    fontWeight: 700,
+    textTransform: 'uppercase',
+    letterSpacing: '0.04em',
+    opacity: 0.7,
+    marginBottom: '6px',
+  },
+  miniBtn: {
+    background: 'transparent',
+    color: 'inherit',
+    border: 'none',
+    cursor: 'pointer',
+    fontSize: '0.85rem',
+    opacity: 0.7,
+    lineHeight: 1,
+  },
+  suggestAdded: { flex: 1, color: '#7ec699', fontWeight: 600 },
   goalRow: {
     display: 'flex',
     alignItems: 'flex-start',
@@ -1088,16 +1109,6 @@ const styles = {
   goalCheck: { marginTop: '3px', flexShrink: 0, cursor: 'pointer' },
   goalText: { flex: 1 },
   goalTextDone: { flex: 1, textDecoration: 'line-through', opacity: 0.5 },
-  regenLink: {
-    background: 'transparent',
-    color: 'inherit',
-    border: '1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.18))',
-    borderRadius: '6px',
-    padding: '4px 9px',
-    cursor: 'pointer',
-    fontSize: '0.74rem',
-    opacity: 0.8,
-  },
   card: {
     border: '1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.12))',
     borderRadius: '10px',
@@ -1136,11 +1147,12 @@ const styles = {
   imgButtons: { display: 'flex', gap: '6px', marginBottom: '6px' },
   genBtn: {
     flex: 1,
+    width: '100%',
     background: 'var(--crimson70a, rgba(91,127,180,0.25))',
     color: 'inherit',
     border: '1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.18))',
     borderRadius: '6px',
-    padding: '5px 8px',
+    padding: '6px 8px',
     cursor: 'pointer',
     fontSize: '0.78rem',
     fontWeight: 600,
