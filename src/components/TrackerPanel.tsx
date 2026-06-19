@@ -2,12 +2,32 @@ import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { createRoot } from 'react-dom/client';
 import { EventNames } from 'sillytavern-utils-lib/types';
 import { AutoModeOptions } from 'sillytavern-utils-lib/types/translate';
+import { Generator, Message } from 'sillytavern-utils-lib';
 import { EXTENSION_KEY } from '../config.js';
 import { settingsManager } from './Settings.js';
 
 const VALUE_KEY = 'value';
 const IMG_KEY = 'WTrackerPanelImages';
+const PLOT_KEY = 'mainPlot';
+const PLOT_PROMPT_KEY = 'WTRACKER_MAINPLOT';
 
+const plotGenerator = new Generator();
+
+// ---------------------------------------------------------------- Hauptplot-Prompt
+const MAIN_PLOT_PROMPT = `You are a master game master. Based ONLY on the provided source material (player character, main character, lorebook / world info, and current scene state), invent the overarching MAIN PLOT of a long-running roleplay campaign as exactly 10 high-level long-term goals.
+
+REQUIREMENTS:
+- Each goal must be a MAJOR, long-horizon objective that takes a VERY long time to achieve — not resolvable in a few scenes. Think arcs spanning the whole campaign.
+- Ground every goal concretely in the given world: use its factions, places, characters, conflicts and lore. NO generic filler like "become the strongest" or "save the world" unless the lore explicitly demands it.
+- Make the goals diverse: mix personal, political, relational, mysterious and world-level stakes where the lore supports it.
+- Order them roughly from earlier-reachable to most distant and epic.
+- Write each goal in GERMAN, as a single clear sentence.
+
+OUTPUT FORMAT (STRICT):
+Return ONLY a JSON array of exactly 10 strings and nothing else. No markdown, no commentary, no keys.
+Example: ["Ziel eins ...", "Ziel zwei ...", "..."]`;
+
+// ---------------------------------------------------------------- Labels
 const LABELS: Record<string, string> = {
   time: 'Zeit',
   timeElapsed: 'Vergangen',
@@ -60,6 +80,7 @@ const AUTO_MODE_OPTIONS: { value: string; label: string }[] = [
   { value: 'both', label: 'Beides verarbeiten' },
 ];
 
+// ---------------------------------------------------------------- Tracker lesen
 function getLatestTracker(): any | null {
   try {
     const ctx = SillyTavern.getContext();
@@ -75,6 +96,7 @@ function getLatestTracker(): any | null {
   return null;
 }
 
+// ---------------------------------------------------------------- Bild-Speicher
 function loadImage(name: string): string | null {
   try {
     const ctx: any = SillyTavern.getContext();
@@ -97,6 +119,175 @@ function clearImage(name: string): void {
   }
 }
 
+// ---------------------------------------------------------------- Hauptplot-Speicher (chat-weit)
+type PlotGoal = { text: string; done: boolean };
+
+function loadPlot(): PlotGoal[] {
+  try {
+    const ctx: any = SillyTavern.getContext();
+    const data = ctx.chatMetadata?.[EXTENSION_KEY]?.[PLOT_KEY];
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+function savePlot(goals: PlotGoal[]): void {
+  try {
+    const ctx: any = SillyTavern.getContext();
+    if (!ctx.chatMetadata[EXTENSION_KEY]) ctx.chatMetadata[EXTENSION_KEY] = {};
+    ctx.chatMetadata[EXTENSION_KEY][PLOT_KEY] = goals;
+    ctx.saveMetadataDebounced();
+  } catch (e) {
+    console.error('[WTracker Panel] plot save error', e);
+  }
+  applyPlotInjection(goals);
+}
+
+// Injiziert die offenen Ziele dauerhaft in den Spiel-Kontext.
+function applyPlotInjection(goals: PlotGoal[]): void {
+  try {
+    const ctx: any = SillyTavern.getContext();
+    if (typeof ctx.setExtensionPrompt !== 'function') return;
+    const open = goals.filter((g) => !g.done);
+    if (!open.length) {
+      ctx.setExtensionPrompt(PLOT_PROMPT_KEY, '', 1, 4);
+      return;
+    }
+    const text =
+      'Übergeordnete, langfristige Hauptziele dieser Geschichte (Hintergrund-Richtung — nicht erzwingen, aber konsistent und glaubwürdig darauf hinarbeiten):\n' +
+      open.map((g, i) => `${i + 1}. ${g.text}`).join('\n');
+    ctx.setExtensionPrompt(PLOT_PROMPT_KEY, text, 1, 4);
+  } catch (e) {
+    console.error('[WTracker Panel] plot injection error', e);
+  }
+}
+
+// ---------------------------------------------------------------- Quellmaterial sammeln
+async function gatherSourceMaterial(): Promise<string> {
+  const ctx: any = SillyTavern.getContext();
+  const blocks: string[] = [];
+
+  // Spielercharakter / Persona
+  try {
+    const pName = ctx.name1 ?? 'Spieler';
+    let pDesc = '';
+    try {
+      pDesc = ctx.powerUserSettings?.persona_description ?? ctx.persona_description ?? '';
+    } catch {}
+    blocks.push(`### Spielercharakter\nName: ${pName}\n${pDesc}`.trim());
+  } catch {}
+
+  // Hauptcharakter (Charakterkarte)
+  try {
+    const ch = ctx.characters?.[ctx.characterId];
+    if (ch) {
+      const card = [
+        ch.name && `Name: ${ch.name}`,
+        ch.description && `Beschreibung: ${ch.description}`,
+        ch.personality && `Persönlichkeit: ${ch.personality}`,
+        ch.scenario && `Szenario: ${ch.scenario}`,
+      ]
+        .filter(Boolean)
+        .join('\n');
+      if (card) blocks.push(`### Hauptcharakter\n${card}`);
+      const cb = ch.data?.character_book;
+      if (cb?.entries?.length) {
+        const ents = cb.entries
+          .map((e: any) => e?.content)
+          .filter(Boolean)
+          .join('\n---\n');
+        if (ents) blocks.push(`### Charakter-Lorebook\n${ents}`);
+      }
+    }
+  } catch (e) {
+    console.warn('[WTracker Panel] char read failed', e);
+  }
+
+  // World Info / Lorebook (aktive + konstante Einträge)
+  try {
+    if (typeof ctx.getWorldInfoPrompt === 'function') {
+      const wi = await ctx.getWorldInfoPrompt(ctx.chat ?? [], 100000, true);
+      const wiText = (wi?.worldInfoString ?? wi?.worldInfoBefore ?? '').trim();
+      if (wiText) blocks.push(`### Lorebook / World Info\n${wiText}`);
+    }
+  } catch (e) {
+    console.warn('[WTracker Panel] world info read failed', e);
+  }
+
+  // Aktueller Szenen-Zustand
+  try {
+    const t = getLatestTracker();
+    if (t) blocks.push(`### Aktueller Szenen-Zustand (Tracker)\n${JSON.stringify(t, null, 2)}`);
+  } catch {}
+
+  const text = blocks.join('\n\n');
+  console.log('[WTracker Panel] Hauptplot-Quellmaterial:\n', text);
+  return (
+    text ||
+    'Keine besonderen Quellinformationen verfügbar. Erfinde einen passenden, in sich stimmigen Fantasy-Hauptplot.'
+  );
+}
+
+// ---------------------------------------------------------------- Plot generieren
+function parseGoals(raw: string): string[] {
+  let text = String(raw ?? '').trim();
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) text = fence[1].trim();
+  try {
+    const arr = JSON.parse(text);
+    if (Array.isArray(arr)) {
+      return arr
+        .map((x) => String(x).trim())
+        .filter(Boolean)
+        .slice(0, 10);
+    }
+  } catch {}
+  // Fallback: zeilenweise, Nummerierung entfernen
+  return String(raw ?? '')
+    .split('\n')
+    .map((l) => l.replace(/^\s*(?:\d+[.)]|[-*•])\s*/, '').trim())
+    .filter((l) => l.length > 0 && !/^```/.test(l))
+    .slice(0, 10);
+}
+
+async function generatePlotGoals(): Promise<string[]> {
+  const settings = settingsManager.getSettings();
+  if (!settings.profileId) {
+    throw new Error('Kein Connection Profile in den WTracker-Settings gewählt.');
+  }
+  const source = await gatherSourceMaterial();
+  const messages = [
+    { role: 'system', content: MAIN_PLOT_PROMPT },
+    { role: 'user', content: source },
+  ] as unknown as Message[];
+
+  const data: any = await new Promise((resolve, reject) => {
+    const abortController = new AbortController();
+    plotGenerator.generateRequest(
+      {
+        profileId: settings.profileId,
+        prompt: messages,
+        maxTokens: 2000,
+        custom: { signal: abortController.signal },
+      } as any,
+      {
+        abortController,
+        onStart: () => {},
+        onFinish: (_id: any, d: any, err: any) => {
+          if (err) return reject(err);
+          if (!d) return reject(new Error('Generierung abgebrochen.'));
+          resolve(d);
+        },
+      } as any,
+    );
+  });
+
+  const content = typeof data === 'string' ? data : data?.content;
+  if (!content) throw new Error('Keine Antwort vom Modell erhalten.');
+  return parseGoals(content);
+}
+
+// ---------------------------------------------------------------- Bild-Helfer
 function buildImagePrompt(c: any): string {
   const a = c?.appearance ?? {};
   const parts = [
@@ -126,6 +317,7 @@ async function generateImageUrl(prompt: string): Promise<string | null> {
   return typeof url === 'string' && url.trim() ? url.trim() : null;
 }
 
+// ---------------------------------------------------------------- generische Wertdarstellung
 const isPrimitive = (v: any) => v === null || ['string', 'number', 'boolean'].includes(typeof v);
 const isEmpty = (v: any) =>
   v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0);
@@ -239,6 +431,149 @@ function Relationships({ list }: { list: any[] }): React.ReactElement {
   );
 }
 
+// ---------------------------------------------------------------- einklappbare Sektion
+function CollapsibleSection({
+  title,
+  icon,
+  defaultOpen = true,
+  children,
+}: {
+  title: string;
+  icon: string;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}): React.ReactElement {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div style={styles.section}>
+      <div style={styles.sectionHead} onClick={() => setOpen((o) => !o)}>
+        <span style={styles.sectionTitleText}>
+          {icon} {title}
+        </span>
+        <span style={styles.cardToggle}>{open ? '▾' : '▸'}</span>
+      </div>
+      {open && <div style={styles.sectionBody}>{children}</div>}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- Allgemein-Inhalt
+function SceneContent({ data }: { data: any }): React.ReactElement {
+  const topics = data.topics
+    ? [data.topics.primaryTopic, data.topics.emotionalTone, data.topics.interactionTheme].filter(Boolean)
+    : [];
+  return (
+    <div>
+      <div style={styles.timeBig}>{data.time ?? '—'}</div>
+      {data.timeElapsed && <div style={styles.timeElapsed}>⏱ {data.timeElapsed}</div>}
+      {data.location && <Row k="location" v={data.location} />}
+      {data.weather && <Row k="weather" v={data.weather} />}
+      {data.changeLog && (
+        <div style={styles.changeLog}>
+          <span style={styles.rowLabel}>Änderungen</span>
+          <span style={styles.changeLogText}>{data.changeLog}</span>
+        </div>
+      )}
+      {topics.length > 0 && (
+        <div style={styles.row}>
+          <span style={styles.rowLabel}>Themen</span>
+          <span style={styles.rowValue}>
+            <Chips items={topics} />
+          </span>
+        </div>
+      )}
+      {Array.isArray(data.charactersPresent) && data.charactersPresent.length > 0 && (
+        <div style={styles.row}>
+          <span style={styles.rowLabel}>Anwesend</span>
+          <span style={styles.rowValue}>
+            <Chips items={data.charactersPresent} />
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- Hauptplot-UI
+function MainPlotSection(props: {
+  goals: PlotGoal[];
+  pending: string[] | null;
+  busy: boolean;
+  err: string | null;
+  onGenerate: () => void;
+  onAccept: () => void;
+  onDiscard: () => void;
+  onToggle: (i: number) => void;
+  onRegenerate: () => void;
+}): React.ReactElement {
+  const { goals, pending, busy, err, onGenerate, onAccept, onDiscard, onToggle, onRegenerate } = props;
+
+  if (pending) {
+    return (
+      <div>
+        <div style={styles.plotHint}>Vorschlag — prüfen, dann übernehmen oder verwerfen:</div>
+        <ol style={styles.plotPendingList}>
+          {pending.map((g, i) => (
+            <li key={i} style={styles.plotPendingItem}>
+              {g}
+            </li>
+          ))}
+        </ol>
+        <div style={styles.plotButtons}>
+          <button style={styles.genBtn} onClick={onAccept} disabled={busy}>
+            ✓ Übernehmen
+          </button>
+          <button style={styles.clearBtn} onClick={onGenerate} disabled={busy} title="Neuen Vorschlag würfeln">
+            🎲
+          </button>
+          <button style={styles.clearBtn} onClick={onDiscard} disabled={busy} title="Verwerfen">
+            ✕
+          </button>
+        </div>
+        {err && <div style={styles.errText}>{err}</div>}
+      </div>
+    );
+  }
+
+  if (!goals.length) {
+    return (
+      <div>
+        <div style={styles.plotHint}>
+          Noch kein Hauptplot. Generiere 10 übergeordnete Langzeitziele aus Lorebook und Charakter.
+        </div>
+        <button style={styles.genBtn} onClick={onGenerate} disabled={busy}>
+          {busy ? '⏳ Generiere…' : '🎯 Hauptplot generieren'}
+        </button>
+        {err && <div style={styles.errText}>{err}</div>}
+      </div>
+    );
+  }
+
+  const doneCount = goals.filter((g) => g.done).length;
+  return (
+    <div>
+      <div style={styles.plotProgress}>
+        {doneCount} / {goals.length} erreicht
+      </div>
+      <div>
+        {goals.map((g, i) => (
+          <label key={i} style={styles.goalRow}>
+            <input type="checkbox" checked={g.done} onChange={() => onToggle(i)} style={styles.goalCheck} />
+            <span style={g.done ? styles.goalTextDone : styles.goalText}>{g.text}</span>
+          </label>
+        ))}
+      </div>
+      <div style={{ marginTop: '8px' }}>
+        <button style={styles.regenLink} onClick={onRegenerate} disabled={busy}>
+          {busy ? '⏳ …' : '↻ Neu generieren'}
+        </button>
+      </div>
+      {err && <div style={styles.errText}>{err}</div>}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- Charakterkarte
 function CharacterCard({ character }: { character: any }): React.ReactElement {
   const name = character?.name ?? 'Unbenannt';
   const meta = [character?.age, character?.gender, character?.race].filter(Boolean).join(' · ');
@@ -379,50 +714,7 @@ function CharacterCard({ character }: { character: any }): React.ReactElement {
   );
 }
 
-function SceneHeader({ data }: { data: any }): React.ReactElement {
-  const [open, setOpen] = useState(true);
-  const topics = data.topics
-    ? [data.topics.primaryTopic, data.topics.emotionalTone, data.topics.interactionTheme].filter(Boolean)
-    : [];
-  return (
-    <div style={styles.scene}>
-      <div style={styles.sceneHead} onClick={() => setOpen((o) => !o)}>
-        <span style={styles.timeBig}>{data.time ?? '—'}</span>
-        <span style={styles.cardToggle}>{open ? '▾' : '▸'}</span>
-      </div>
-      {open && (
-        <div style={styles.sceneBody}>
-          {data.timeElapsed && <div style={styles.timeElapsed}>⏱ {data.timeElapsed}</div>}
-          {data.location && <Row k="location" v={data.location} />}
-          {data.weather && <Row k="weather" v={data.weather} />}
-          {data.changeLog && (
-            <div style={styles.changeLog}>
-              <span style={styles.rowLabel}>Änderungen</span>
-              <span style={styles.changeLogText}>{data.changeLog}</span>
-            </div>
-          )}
-          {topics.length > 0 && (
-            <div style={styles.row}>
-              <span style={styles.rowLabel}>Themen</span>
-              <span style={styles.rowValue}>
-                <Chips items={topics} />
-              </span>
-            </div>
-          )}
-          {Array.isArray(data.charactersPresent) && data.charactersPresent.length > 0 && (
-            <div style={styles.row}>
-              <span style={styles.rowLabel}>Anwesend</span>
-              <span style={styles.rowValue}>
-                <Chips items={data.charactersPresent} />
-              </span>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
+// ---------------------------------------------------------------- Panel
 function Panel(): React.ReactElement {
   const [open, setOpen] = useState(true);
   const [tick, setTick] = useState(0);
@@ -446,6 +738,21 @@ function Panel(): React.ReactElement {
     }
   }, []);
 
+  // Hauptplot-Zustand
+  const [plotGoals, setPlotGoals] = useState<PlotGoal[]>(() => loadPlot());
+  const [plotPending, setPlotPending] = useState<string[] | null>(null);
+  const [plotBusy, setPlotBusy] = useState(false);
+  const [plotErr, setPlotErr] = useState<string | null>(null);
+
+  // Plot bei Chatwechsel/Mount neu laden + injizieren (läuft auch wenn Panel zu ist)
+  useEffect(() => {
+    const g = loadPlot();
+    setPlotGoals(g);
+    setPlotPending(null);
+    setPlotErr(null);
+    applyPlotInjection(g);
+  }, [tick]);
+
   useEffect(() => {
     const es: any = SillyTavern.getContext().eventSource;
     const events = [
@@ -459,6 +766,55 @@ function Panel(): React.ReactElement {
       events.forEach((e) => off?.call(es, e, refresh));
     };
   }, [refresh]);
+
+  const doGenerate = useCallback(async () => {
+    if (plotBusy) return;
+    setPlotBusy(true);
+    setPlotErr(null);
+    try {
+      const goals = await generatePlotGoals();
+      if (!goals.length) setPlotErr('Keine Ziele erhalten — evtl. Antwort des Modells prüfen (Konsole).');
+      else setPlotPending(goals);
+    } catch (e: any) {
+      console.error('[WTracker Panel] plot gen error', e);
+      setPlotErr(e?.message ?? 'Fehler bei der Generierung.');
+    } finally {
+      setPlotBusy(false);
+    }
+  }, [plotBusy]);
+
+  const acceptPending = useCallback(() => {
+    if (!plotPending) return;
+    const goals = plotPending.map((t) => ({ text: t, done: false }));
+    savePlot(goals);
+    setPlotGoals(goals);
+    setPlotPending(null);
+  }, [plotPending]);
+
+  const discardPending = useCallback(() => setPlotPending(null), []);
+
+  const toggleGoal = useCallback((i: number) => {
+    setPlotGoals((prev) => {
+      const next = prev.map((g, idx) => (idx === i ? { ...g, done: !g.done } : g));
+      savePlot(next);
+      return next;
+    });
+  }, []);
+
+  const regenerate = useCallback(async () => {
+    try {
+      const ctx: any = SillyTavern.getContext();
+      const ok = await ctx.Popup.show.confirm(
+        'Hauptplot neu generieren',
+        'Den bestehenden Hauptplot verwerfen und einen neuen erzeugen? Das kann nicht rückgängig gemacht werden.',
+      );
+      if (!ok) return;
+    } catch {
+      // Falls Popup nicht verfügbar: lieber abbrechen als versehentlich löschen
+      return;
+    }
+    doGenerate();
+  }, [doGenerate]);
 
   const tracker = useMemo(() => getLatestTracker(), [tick]);
   const characters = Array.isArray(tracker?.characters) ? tracker.characters : [];
@@ -487,11 +843,7 @@ function Panel(): React.ReactElement {
 
       <div style={styles.autoModeRow}>
         <label style={styles.autoModeLabel}>Auto Mode</label>
-        <select
-          style={styles.autoModeSelect}
-          value={autoMode}
-          onChange={(e) => changeAutoMode(e.target.value)}
-        >
+        <select style={styles.autoModeSelect} value={autoMode} onChange={(e) => changeAutoMode(e.target.value)}>
           {AUTO_MODE_OPTIONS.map((o) => (
             <option key={o.value} value={o.value}>
               {o.label}
@@ -501,21 +853,31 @@ function Panel(): React.ReactElement {
       </div>
 
       <div style={styles.body}>
-        {!tracker ? (
-          <div style={styles.muted}>Noch keine Tracker-Daten in diesem Chat.</div>
-        ) : (
-          <>
-            <SceneHeader data={tracker} />
-            {characters.length > 0 && (
-              <>
-                <div style={styles.sectionTitle}>Charaktere</div>
-                {characters.map((c: any, i: number) => (
-                  <CharacterCard key={c?.name ?? i} character={c} />
-                ))}
-              </>
-            )}
-          </>
-        )}
+        <CollapsibleSection title="Allgemein" icon="📋">
+          {tracker ? <SceneContent data={tracker} /> : <div style={styles.muted}>Noch keine Tracker-Daten.</div>}
+        </CollapsibleSection>
+
+        <CollapsibleSection title="Hauptplot" icon="🎯">
+          <MainPlotSection
+            goals={plotGoals}
+            pending={plotPending}
+            busy={plotBusy}
+            err={plotErr}
+            onGenerate={doGenerate}
+            onAccept={acceptPending}
+            onDiscard={discardPending}
+            onToggle={toggleGoal}
+            onRegenerate={regenerate}
+          />
+        </CollapsibleSection>
+
+        <CollapsibleSection title="Charaktere" icon="🎭">
+          {characters.length > 0 ? (
+            characters.map((c: any, i: number) => <CharacterCard key={c?.name ?? i} character={c} />)
+          ) : (
+            <div style={styles.muted}>Keine Charaktere im aktuellen Tracker.</div>
+          )}
+        </CollapsibleSection>
       </div>
     </div>
   );
@@ -536,6 +898,7 @@ export function mountTrackerPanel(): void {
   );
 }
 
+// ---------------------------------------------------------------- Styles
 function tag(color: string): React.CSSProperties {
   return {
     display: 'inline-block',
@@ -623,32 +986,63 @@ const styles = {
     fontSize: '1.05rem',
     boxShadow: '0 4px 14px rgba(0,0,0,0.4)',
   },
-  scene: {
-    background: 'rgba(255,255,255,0.04)',
+  section: {
     border: '1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.1))',
     borderRadius: '10px',
-    padding: '7px 11px 9px',
     marginBottom: '10px',
+    overflow: 'hidden',
+    background: 'rgba(255,255,255,0.03)',
   },
-  sceneHead: {
+  sectionHead: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
+    padding: '8px 11px',
     cursor: 'pointer',
     userSelect: 'none',
+    fontWeight: 700,
+    fontSize: '0.82rem',
+    letterSpacing: '0.03em',
+    background: 'linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0))',
   },
-  sceneBody: { marginTop: '6px' },
+  sectionTitleText: { textTransform: 'uppercase', opacity: 0.85 },
+  sectionBody: { padding: '9px 11px' },
   timeBig: { fontSize: '1.05rem', fontWeight: 700, letterSpacing: '0.01em' },
   timeElapsed: { fontSize: '0.74rem', opacity: 0.65, fontStyle: 'italic', marginBottom: '6px' },
   changeLog: { marginTop: '4px' },
   changeLogText: { fontStyle: 'italic', opacity: 0.9, display: 'block', marginTop: '2px' },
-  sectionTitle: {
+  plotHint: { fontSize: '0.78rem', opacity: 0.7, marginBottom: '8px', lineHeight: 1.4 },
+  plotProgress: {
+    fontSize: '0.74rem',
     fontWeight: 700,
-    opacity: 0.55,
-    fontSize: '0.72rem',
+    opacity: 0.7,
+    marginBottom: '6px',
     textTransform: 'uppercase',
-    letterSpacing: '0.06em',
-    margin: '6px 0 4px',
+    letterSpacing: '0.04em',
+  },
+  plotPendingList: { margin: '0 0 8px', paddingLeft: '20px' },
+  plotPendingItem: { marginBottom: '4px', lineHeight: 1.4 },
+  plotButtons: { display: 'flex', gap: '6px' },
+  goalRow: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: '7px',
+    marginBottom: '6px',
+    cursor: 'pointer',
+    lineHeight: 1.4,
+  },
+  goalCheck: { marginTop: '3px', flexShrink: 0, cursor: 'pointer' },
+  goalText: { flex: 1 },
+  goalTextDone: { flex: 1, textDecoration: 'line-through', opacity: 0.5 },
+  regenLink: {
+    background: 'transparent',
+    color: 'inherit',
+    border: '1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.18))',
+    borderRadius: '6px',
+    padding: '4px 9px',
+    cursor: 'pointer',
+    fontSize: '0.74rem',
+    opacity: 0.8,
   },
   card: {
     border: '1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.12))',
@@ -684,7 +1078,7 @@ const styles = {
   },
   cardName: { fontWeight: 700, fontSize: '0.95rem' },
   cardMeta: { fontSize: '0.74rem', opacity: 0.6 },
-  cardToggle: { marginLeft: 'auto', opacity: 0.6, fontSize: '0.8rem' },
+  cardToggle: { opacity: 0.6, fontSize: '0.8rem' },
   imgButtons: { display: 'flex', gap: '6px', marginBottom: '6px' },
   genBtn: {
     flex: 1,
@@ -718,7 +1112,7 @@ const styles = {
     cursor: 'pointer',
     fontSize: '0.78rem',
   },
-  errText: { color: '#e06c75', fontSize: '0.74rem', marginBottom: '4px' },
+  errText: { color: '#e06c75', fontSize: '0.74rem', marginTop: '4px' },
   cardBody: { padding: '8px 10px' },
   group: { marginBottom: '8px' },
   groupHead: {
